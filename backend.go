@@ -29,40 +29,32 @@ type ociSecrets struct {
 // Backend creates a new backend for OCI secrets engine
 func Backend(conf *logical.BackendConfig) *ociSecrets {
 	var b ociSecrets
-
 	b.Backend = &framework.Backend{
 		BackendType: logical.TypeLogical,
 		Help:        strings.TrimSpace(backendHelp),
-
 		PathsSpecial: &logical.Paths{
-			LocalStorage: []string{
-				framework.WALPrefix,
-			},
 			SealWrapStorage: []string{
 				"config",
-				"role/*",
+				"service-account/*",
 			},
 		},
-
-		Paths: framework.PathAppend(
-			pathRole(&b),
-			[]*framework.Path{
+		Paths: func() []*framework.Path {
+			paths := []*framework.Path{
 				pathConfig(&b),
 				pathConfigCheck(&b),
 				pathListGroups(&b),
-				pathRotateRole(&b),
-				pathCreds(&b),
-			},
-		),
-
+			}
+			paths = append(paths, pathRole(&b)...)
+			paths = append(paths, pathCreds(&b))
+			paths = append(paths, pathServiceAccount(&b)...)
+			return paths
+		}(),
 		Secrets: []*framework.Secret{
 			b.ociToken(),
 		},
-
 		Clean:      b.cleanup,
 		Invalidate: b.invalidate,
 	}
-
 	return &b
 }
 

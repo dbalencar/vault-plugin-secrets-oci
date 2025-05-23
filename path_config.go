@@ -91,13 +91,40 @@ func (b *ociSecrets) pathConfigRead(ctx context.Context, req *logical.Request, d
 
 // pathConfigWrite updates the configuration
 func (b *ociSecrets) pathConfigWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	config := &Config{
-		TenancyOCID: data.Get("tenancy_ocid").(string),
-		UserOCID:    data.Get("user_ocid").(string),
-		PrivateKey:  data.Get("private_key").(string),
-		Fingerprint: data.Get("fingerprint").(string),
-		Region:      data.Get("region").(string),
-		MaxRetries:  data.Get("max_retries").(int),
+	config := &Config{}
+
+	if tenancyOCID, ok := data.GetOk("tenancy_ocid"); ok {
+		config.TenancyOCID = tenancyOCID.(string)
+	} else {
+		return logical.ErrorResponse("tenancy_ocid is required"), nil
+	}
+
+	if userOCID, ok := data.GetOk("user_ocid"); ok {
+		config.UserOCID = userOCID.(string)
+	} else {
+		return logical.ErrorResponse("user_ocid is required"), nil
+	}
+
+	if fingerprint, ok := data.GetOk("fingerprint"); ok {
+		config.Fingerprint = fingerprint.(string)
+	} else {
+		return logical.ErrorResponse("fingerprint is required"), nil
+	}
+
+	if privateKey, ok := data.GetOk("private_key"); ok {
+		config.PrivateKey = privateKey.(string)
+	} else {
+		return logical.ErrorResponse("private_key is required"), nil
+	}
+
+	if region, ok := data.GetOk("region"); ok {
+		config.Region = region.(string)
+	} else {
+		return logical.ErrorResponse("region is required"), nil
+	}
+
+	if maxRetries, ok := data.GetOk("max_retries"); ok {
+		config.MaxRetries = maxRetries.(int)
 	}
 
 	entry, err := logical.StorageEntryJSON("config", config)

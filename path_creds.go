@@ -32,65 +32,79 @@ func pathCreds(b *ociSecrets) *framework.Path {
 }
 
 func (b *ociSecrets) pathCredsRead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	name := d.Get("name").(string)
+	roleName := d.Get("name").(string)
 
-	role, err := b.getRole(ctx, req.Storage, name)
+	roleEntry, err := b.getRole(ctx, req.Storage, roleName)
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving role: %w", err)
+		return nil, err
 	}
-	if role == nil {
-		return nil, fmt.Errorf("role %q not found", name)
+	if roleEntry == nil {
+		return logical.ErrorResponse(fmt.Sprintf("role '%s' not found", roleName)), nil
 	}
 
-	// Get the OCI client
+	// Get the client configuration
 	client, err := b.getClient(ctx, req.Storage)
 	if err != nil {
-		return nil, fmt.Errorf("error getting OCI client: %w", err)
+		return nil, err
+	}
+	if client == nil {
+		return logical.ErrorResponse("configuration not found"), nil
 	}
 
-	// Generate a unique username for this credential
-	username := fmt.Sprintf("vault-%s-%d", name, time.Now().UnixNano())
+	// Create a new user
+	userName := fmt.Sprintf("vault-%s-%d", roleName, time.Now().Unix())
+	description := fmt.Sprintf("Vault-generated user for role %s", roleName)
 
-	// Create the user in OCI
-	user, err := client.createUser(ctx, username, fmt.Sprintf("OCI user for Vault role %s", name))
-	if err != nil {
-		return nil, fmt.Errorf("error creating OCI user: %w", err)
-	}
-
-	// Add user to groups if specified
-	for _, groupName := range role.Groups {
-		if err := client.addUserToGroup(ctx, *user.Id, groupName); err != nil {
-			return nil, fmt.Errorf("error adding user to group %s: %w", groupName, err)
-		}
-	}
-
-	// Create auth token for the user
-	token, err := client.generateCredentials(ctx, *user.Id, fmt.Sprintf("OCI auth token for Vault user %s", *user.Name))
-	if err != nil {
-		return nil, fmt.Errorf("error generating auth token: %w", err)
-	}
-
-	// Calculate TTL
-	ttl, warnings, err := framework.CalculateTTL(b.System(), 0, role.TTL, 0, role.MaxTTL, 0, time.Time{})
+	user, err := client.createUser(ctx, userName, description)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate the response
+	// Add user to groups
+	for _, groupName := range roleEntry.Groups {
+		if err := client.addUserToGroup(ctx, *user.Id, groupName); err != nil {
+			// Clean up the user if we fail to add them to a group
+			if cleanupErr := client.deleteUser(ctx, *user.Id); cleanupErr != nil {
+				b.Logger().Error("failed to clean up user after group assignment failure",
+					"user_id", *user.Id,
+					"error", cleanupErr)
+			}
+			return nil, err
+		}
+	}
+
+	// Generate auth token
+	token, err := client.generateCredentials(ctx, *user.Id, "Vault-generated token")
+	if err != nil {
+		// Clean up the user if we fail to generate credentials
+		if cleanupErr := client.deleteUser(ctx, *user.Id); cleanupErr != nil {
+			b.Logger().Error("failed to clean up user after credential generation failure",
+				"user_id", *user.Id,
+				"error", cleanupErr)
+		}
+		return nil, err
+	}
+
+	// Calculate TTL
+	var ttl, maxTTL time.Duration
+	if roleEntry.TTL > 0 {
+		ttl = roleEntry.TTL
+	}
+	if roleEntry.MaxTTL > 0 {
+		maxTTL = roleEntry.MaxTTL
+	}
+
 	resp := b.Secret(SecretTokenType).Response(map[string]interface{}{
-		"access_token": *token.Token,
-		"user_id":      *user.Id,
-		"username":     *user.Name,
+		"token":   *token.Token,
+		"user_id": *user.Id,
 	}, map[string]interface{}{
-		"user_id":   *user.Id,
-		"username":  *user.Name,
-		"role_name": name,
+		"user_id":  *user.Id,
+		"username": *user.Name,
 	})
 
-	resp.Secret.TTL = ttl
-
-	if len(warnings) > 0 {
-		resp.Warnings = warnings
+	if ttl > 0 || maxTTL > 0 {
+		resp.Secret.TTL = ttl
+		resp.Secret.MaxTTL = maxTTL
 	}
 
 	return resp, nil

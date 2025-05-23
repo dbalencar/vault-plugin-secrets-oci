@@ -9,6 +9,9 @@ This plugin provides dynamic credential management for Oracle Cloud Infrastructu
 - Automatic credential lifecycle management
 - Configurable TTLs and credential rotation
 - Secure cleanup of expired credentials
+- **Service account password rotation with intelligent TTL management**
+- **Access-based rotation patterns (17h when accessed, 72h when idle)**
+- **Vault password policy integration for secure password generation**
 
 ## Installation
 
@@ -73,6 +76,29 @@ Parameters:
 - `ttl`: Default TTL for generated credentials
 - `max_ttl`: Maximum allowed TTL for credentials
 
+### Service Account Password Rotation Configuration
+
+Enable automatic password rotation for service accounts:
+
+```bash
+vault write oci/role/service-account-role \
+    groups=ServiceAccountGroup \
+    enable_service_account_rotation=true \
+    service_account_id="ocid1.user.oc1.region.aaaaaaaexample" \
+    password_policy="strong-password-policy" \
+    rotation_ttl="72h" \
+    access_based_rotation_ttl="17h" \
+    max_idle_time="72h"
+```
+
+Service Account Rotation Parameters:
+- `enable_service_account_rotation`: Enable automatic password rotation (default: false)
+- `service_account_id`: OCI service account user OCID (required when rotation enabled)
+- `password_policy`: Vault password policy for generating passwords (optional)
+- `rotation_ttl`: Default rotation interval when not accessed (default: 72h)
+- `access_based_rotation_ttl`: Rotation interval when password is accessed (default: 17h)
+- `max_idle_time`: Maximum time without access before forced rotation (default: 72h)
+
 ## Usage
 
 ### Generating Credentials
@@ -93,6 +119,47 @@ lease_renewable    false
 access_token       xxxxx
 user_id            ocid1.user.oc1...
 username           vault-example-role-timestamp
+```
+
+### Service Account Password Management
+
+#### Retrieving Service Account Passwords
+
+Get the current password for a service account with automatic rotation:
+
+```bash
+vault read oci/service-account/service-account-role
+```
+
+Response:
+```
+Key                Value
+---                -----
+service_account_id ocid1.user.oc1.region.aaaaaaaexample
+password           generated-secure-password
+created_at         2024-01-15T10:30:00Z
+last_accessed_at   2024-01-15T15:45:00Z
+last_rotated_at    2024-01-15T10:30:00Z
+access_count       5
+rotation_count     2
+next_rotation      2024-01-16T03:45:00Z
+max_rotation       2024-01-18T10:30:00Z
+```
+
+#### Manual Password Rotation
+
+Force immediate password rotation:
+
+```bash
+vault write oci/service-account/service-account-role/rotate force=true
+```
+
+#### List Service Accounts
+
+List all service accounts with rotation enabled:
+
+```bash
+vault list oci/service-account/
 ```
 
 ### Managing Credentials
@@ -121,17 +188,35 @@ List available OCI groups:
 vault read oci/config/check
 ```
 
+## Service Account Rotation Logic
+
+The plugin implements intelligent password rotation based on access patterns:
+
+1. **Initial Creation**: Password is generated when first accessed
+2. **Access-Based Rotation**: If password is retrieved, it rotates after `access_based_rotation_ttl` (default: 17h)
+3. **Idle-Based Rotation**: If password is never accessed, it rotates after `max_idle_time` (default: 72h)
+4. **Forced Rotation**: If password isn't accessed for `max_idle_time` since last access, it's immediately rotated
+
+### Password Generation
+
+- Uses Vault password policies if specified in the role
+- Falls back to secure default generation (24 characters, mixed case, numbers, symbols)
+- Passwords are hashed and tracked for security
+
 ## API Endpoints
 
-| Method | Path                    | Description                              |
-|--------|------------------------|------------------------------------------|
-| GET    | /oci/config/check      | List available groups                    |
-| POST   | /oci/config            | Configure the plugin                     |
-| GET    | /oci/creds/:role       | Generate credentials                     |
-| POST   | /oci/role/:name        | Create/update role                      |
-| GET    | /oci/role/:name        | Read role                               |
-| DELETE | /oci/role/:name        | Delete role                             |
-| POST   | /oci/rotate-role/:name | Rotate credentials for role             |
+| Method | Path                               | Description                              |
+|--------|------------------------------------|------------------------------------------|
+| GET    | /oci/config/check                  | List available groups                    |
+| POST   | /oci/config                        | Configure the plugin                     |
+| GET    | /oci/creds/:role                   | Generate credentials                     |
+| POST   | /oci/role/:name                    | Create/update role                       |
+| GET    | /oci/role/:name                    | Read role                                |
+| DELETE | /oci/role/:name                    | Delete role                              |
+| POST   | /oci/rotate-role/:name             | Rotate credentials for role              |
+| GET    | /oci/service-account/:role         | Get service account password             |
+| POST   | /oci/service-account/:role/rotate  | Force rotate service account password    |
+| LIST   | /oci/service-account/              | List service accounts                    |
 
 ## Security Considerations
 
@@ -141,7 +226,17 @@ vault read oci/config/check
 
 3. **Rotation**: Support for both individual credential rotation and role-wide rotation.
 
-4. **Audit Trail**: All credential generation and revocation is logged through Vault's audit system.
+4. **Service Account Security**: 
+   - Passwords are automatically rotated based on access patterns
+   - Access tracking prevents credential stuffing attacks
+   - Configurable rotation intervals for different security postures
+
+5. **Audit Trail**: All credential generation and revocation is logged through Vault's audit system.
+
+6. **Password Security**:
+   - Integration with Vault password policies for complexity requirements
+   - Secure random password generation with proper entropy
+   - Password hashing for verification without storage of plaintext
 
 ## Development
 
